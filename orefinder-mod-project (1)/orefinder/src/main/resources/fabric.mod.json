@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "orefinder",
+  "version": "${version}",
+  "name": "Deepslate Ore Finder",
+  "description": "Finds deepslate emerald and deepslate coal ore near you, with an on/off menu.",
+  "authors": ["You"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.example.orefinder.OreFinderClient"],
+    "modmenu": ["com.example.orefinder.ModMenuIntegration"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "fabric-api": "*"
+  }
+}
