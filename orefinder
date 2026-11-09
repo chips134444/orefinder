@@ -1,0 +1,200 @@
+package com.example.orefinder;
+
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gl.ShaderProgramKeys;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.render.BufferBuilder;
+import net.minecraft.client.render.BufferRenderer;
+import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
+import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.world.ClientWorld;
+import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3d;
+import org.joml.Matrix4f;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+public class OreFinderClient implements ClientModInitializer {
+    private static KeyBinding toggleKey;
+    private static KeyBinding menuKey;
+
+    private static final List<Found> emeralds = new ArrayList<>();
+    private static final List<Found> coals = new ArrayList<>();
+    private int tickCounter = 0;
+
+    private record Found(BlockPos pos, double dist) {}
+
+    @Override
+    public void onInitializeClient() {
+        OreFinderConfig.load();
+
+        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.orefinder.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, "category.orefinder"));
+        menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.orefinder.menu", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_SHIFT, "category.orefinder"));
+
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            while (toggleKey.wasPressed()) {
+                OreFinderConfig.enabled = !OreFinderConfig.enabled;
+                OreFinderConfig.save();
+                if (client.player != null) {
+                    client.player.sendMessage(Text.literal("Ore Finder: " +
+                            (OreFinderConfig.enabled ? "ON" : "OFF")), true);
+                }
+            }
+            while (menuKey.wasPressed()) {
+                client.setScreen(new OreFinderScreen(null));
+            }
+
+            if (!OreFinderConfig.enabled || client.world == null || client.player == null) {
+                emeralds.clear();
+                coals.clear();
+                return;
+            }
+            if (++tickCounter >= 40) { // rescan every 2 seconds
+                tickCounter = 0;
+                scan(client.world, client.player.getBlockPos());
+            }
+        });
+
+        HudRenderCallback.EVENT.register((ctx, tickDelta) -> {
+            if (!OreFinderConfig.enabled) return;
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.player == null || mc.options.hudHidden) return;
+
+            int x = 6, y = 6;
+            ctx.drawTextWithShadow(mc.textRenderer, "Ore Finder (G toggle, Right Shift menu)", x, y, 0xFFFFFF);
+            y += 12;
+            if (OreFinderConfig.findEmerald) y = drawList(ctx, mc, "Deepslate Emerald", emeralds, x, y, 0x55FF55);
+            if (OreFinderConfig.findCoal) y = drawList(ctx, mc, "Deepslate Coal", coals, x, y, 0x55DDFF);
+        });
+
+        // Highlight ores through walls
+        WorldRenderEvents.LAST.register(context -> {
+            if (!OreFinderConfig.enabled) return;
+            boolean drawE = OreFinderConfig.findEmerald && !emeralds.isEmpty();
+            boolean drawC = OreFinderConfig.findCoal && !coals.isEmpty();
+            if (!drawE && !drawC) return;
+
+            MatrixStack ms = context.matrixStack();
+            if (ms == null) return;
+            Vec3d cam = context.camera().getPos();
+
+            ms.push();
+            ms.translate(-cam.x, -cam.y, -cam.z);
+            Matrix4f mat = ms.peek().getPositionMatrix();
+
+            RenderSystem.disableDepthTest();
+            RenderSystem.disableCull();
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.setShader(ShaderProgramKeys.POSITION_COLOR);
+
+            BufferBuilder buf = Tessellator.getInstance().begin(
+                    VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+            if (drawE) for (Found f : emeralds) box(buf, mat, f.pos, 0.1f, 1.0f, 0.2f, 0.45f);
+            if (drawC) for (Found f : coals) box(buf, mat, f.pos, 0.2f, 0.85f, 1.0f, 0.45f);
+            BufferRenderer.drawWithGlobalProgram(buf.end());
+
+            RenderSystem.enableCull();
+            RenderSystem.enableDepthTest();
+            RenderSystem.disableBlend();
+            ms.pop();
+        });
+    }
+
+    private static void v(BufferBuilder b, Matrix4f m, float x, float y, float z,
+                          float r, float g, float bl, float a) {
+        b.vertex(m, x, y, z).color(r, g, bl, a);
+    }
+
+    private static void box(BufferBuilder b, Matrix4f m, BlockPos p,
+                            float r, float g, float bl, float a) {
+        float x0 = p.getX() - 0.002f, y0 = p.getY() - 0.002f, z0 = p.getZ() - 0.002f;
+        float x1 = p.getX() + 1.002f, y1 = p.getY() + 1.002f, z1 = p.getZ() + 1.002f;
+        // bottom
+        v(b, m, x0, y0, z0, r, g, bl, a); v(b, m, x1, y0, z0, r, g, bl, a);
+        v(b, m, x1, y0, z1, r, g, bl, a); v(b, m, x0, y0, z1, r, g, bl, a);
+        // top
+        v(b, m, x0, y1, z0, r, g, bl, a); v(b, m, x0, y1, z1, r, g, bl, a);
+        v(b, m, x1, y1, z1, r, g, bl, a); v(b, m, x1, y1, z0, r, g, bl, a);
+        // north
+        v(b, m, x0, y0, z0, r, g, bl, a); v(b, m, x0, y1, z0, r, g, bl, a);
+        v(b, m, x1, y1, z0, r, g, bl, a); v(b, m, x1, y0, z0, r, g, bl, a);
+        // south
+        v(b, m, x0, y0, z1, r, g, bl, a); v(b, m, x1, y0, z1, r, g, bl, a);
+        v(b, m, x1, y1, z1, r, g, bl, a); v(b, m, x0, y1, z1, r, g, bl, a);
+        // west
+        v(b, m, x0, y0, z0, r, g, bl, a); v(b, m, x0, y0, z1, r, g, bl, a);
+        v(b, m, x0, y1, z1, r, g, bl, a); v(b, m, x0, y1, z0, r, g, bl, a);
+        // east
+        v(b, m, x1, y0, z0, r, g, bl, a); v(b, m, x1, y1, z0, r, g, bl, a);
+        v(b, m, x1, y1, z1, r, g, bl, a); v(b, m, x1, y0, z1, r, g, bl, a);
+    }
+
+    private static int drawList(net.minecraft.client.gui.DrawContext ctx, MinecraftClient mc,
+                                String label, List<Found> list, int x, int y, int color) {
+        if (list.isEmpty()) {
+            ctx.drawTextWithShadow(mc.textRenderer, label + ": none nearby", x, y, color);
+            return y + 11;
+        }
+        ctx.drawTextWithShadow(mc.textRenderer, label + ":", x, y, color);
+        y += 11;
+        int shown = 0;
+        for (Found f : list) {
+            if (shown++ >= 5) break;
+            String s = String.format("  %d, %d, %d  (%.0fm)", f.pos.getX(), f.pos.getY(), f.pos.getZ(), f.dist);
+            ctx.drawTextWithShadow(mc.textRenderer, s, x, y, color);
+            y += 10;
+        }
+        return y + 2;
+    }
+
+    private void scan(ClientWorld world, BlockPos center) {
+        emeralds.clear();
+        coals.clear();
+
+        int r = OreFinderConfig.range;
+        int minY = world.getBottomY();
+        int maxY = Math.min(world.getTopYInclusive(), 8); // deepslate lives at/below ~y=8
+        Vec3d c = center.toCenterPos();
+        BlockPos.Mutable p = new BlockPos.Mutable();
+
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
+                for (int y = minY; y <= maxY; y++) {
+                    p.set(center.getX() + dx, y, center.getZ() + dz);
+                    Block b = world.getBlockState(p).getBlock();
+                    if (b == Blocks.DEEPSLATE_EMERALD_ORE && OreFinderConfig.findEmerald) {
+                        emeralds.add(new Found(p.toImmutable(), Math.sqrt(p.getSquaredDistance(c))));
+                    } else if (b == Blocks.DEEPSLATE_COAL_ORE && OreFinderConfig.findCoal) {
+                        coals.add(new Found(p.toImmutable(), Math.sqrt(p.getSquaredDistance(c))));
+                    }
+                }
+            }
+        }
+        emeralds.sort(Comparator.comparingDouble(Found::dist));
+        coals.sort(Comparator.comparingDouble(Found::dist));
+        trim(emeralds);
+        trim(coals);
+    }
+
+    private static void trim(List<Found> l) {
+        while (l.size() > 64) l.remove(l.size() - 1);
+    }
+}
